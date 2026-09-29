@@ -13,6 +13,10 @@ An AI copilot that helps analysts triage suspicious transactions, built on Cloud
 
 Rules and thresholds live in `src/fraud/rules.ts` and `src/fraud/config.ts`. What counts as REVIEW vs DECLINE is decided in one place, `decide()`.
 
+## Prompt history
+
+The AI-assisted build conversation (prompts, decisions and outcomes) is in [`prompt-history/chat-history.md`](./prompt-history/chat-history.md). It has been redacted: no keys, account IDs, personal information or local paths.
+
 ## Run locally
 
 ```bash
