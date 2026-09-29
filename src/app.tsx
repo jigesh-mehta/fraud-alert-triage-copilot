@@ -1,14 +1,22 @@
 import { Suspense, useCallback, useState, useEffect, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import type { UIMessage } from "ai";
+import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
+import type {
+  CaseRecord,
+  Decision,
+  RuleHit,
+  StoredTransaction,
+  TriageResult
+} from "./fraud/types";
 import {
   Badge,
   Button,
   Empty,
   InputArea,
   PoweredByCloudflare,
+  Surface,
   Switch,
   Text
 } from "@cloudflare/kumo";
@@ -24,7 +32,9 @@ import {
   SunIcon,
   BrainIcon,
   CaretDownIcon,
-  BugIcon
+  BugIcon,
+  GearIcon,
+  WarningIcon
 } from "@phosphor-icons/react";
 
 // ── Small components ──────────────────────────────────────────────────
@@ -51,6 +61,247 @@ function ThemeToggle() {
       onClick={toggle}
       aria-label="Toggle theme"
     />
+  );
+}
+
+// ── Fraud tool result cards ───────────────────────────────────────────
+
+const DECISION_VARIANT: Record<
+  Decision,
+  "primary" | "secondary" | "destructive"
+> = {
+  APPROVE: "primary",
+  REVIEW: "secondary",
+  DECLINE: "destructive"
+};
+
+const DECISION_RING: Record<Decision, string> = {
+  APPROVE: "ring ring-kumo-line",
+  REVIEW: "ring-2 ring-kumo-warning",
+  DECLINE: "ring-2 ring-kumo-danger"
+};
+
+function HitList({ hits }: { hits: RuleHit[] }) {
+  if (hits.length === 0) {
+    return (
+      <Text size="xs" variant="secondary">
+        No rules fired.
+      </Text>
+    );
+  }
+  return (
+    <ul className="space-y-1">
+      {hits.map((h) => (
+        <li key={h.rule} className="flex items-start gap-2">
+          <Badge variant="secondary">{h.rule}</Badge>
+          <Text size="xs" variant="secondary">
+            {h.message} (+{h.weight})
+          </Text>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TriageResultCard({ result }: { result: TriageResult }) {
+  const t = result.transaction;
+  return (
+    <div className="flex justify-start">
+      <Surface
+        className={`max-w-[85%] w-full px-4 py-3 rounded-xl ${DECISION_RING[result.decision]}`}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <Badge variant={DECISION_VARIANT[result.decision]}>
+            {result.decision}
+          </Badge>
+          <Text size="sm" bold>
+            {t.accountId} · {t.amount} {t.currency} · {t.countryCode}
+          </Text>
+          <Text size="xs" variant="secondary">
+            score {result.score}
+          </Text>
+        </div>
+        <HitList hits={result.hits} />
+        <div className="mt-2">
+          <Text size="xs" variant="secondary">
+            {result.explanation}
+          </Text>
+        </div>
+        {result.caseId && (
+          <div className="mt-2 font-mono">
+            <Text size="xs" variant="secondary">
+              Case opened: {result.caseId}
+            </Text>
+          </div>
+        )}
+      </Surface>
+    </div>
+  );
+}
+
+function AccountHistoryCard({
+  accountId,
+  transactions,
+  cases,
+  totalTransactions,
+  totalCases
+}: {
+  accountId: string;
+  transactions: StoredTransaction[];
+  cases: CaseRecord[];
+  totalTransactions: number;
+  totalCases: number;
+}) {
+  return (
+    <div className="flex justify-start">
+      <Surface className="max-w-[85%] w-full px-4 py-3 rounded-xl ring ring-kumo-line">
+        <Text size="sm" bold>
+          {accountId} · {totalTransactions} transactions · {totalCases} cases
+        </Text>
+        {totalTransactions > transactions.length && (
+          <div>
+            <Text size="xs" variant="secondary">
+              Showing the latest {transactions.length} of {totalTransactions}{" "}
+              transactions.
+            </Text>
+          </div>
+        )}
+        {totalTransactions === 0 && totalCases === 0 && (
+          <div className="mt-1">
+            <Text size="xs" variant="secondary">
+              No transactions or cases recorded for this account.
+            </Text>
+          </div>
+        )}
+        {transactions.length > 0 && (
+          <table className="mt-2 w-full text-xs text-kumo-subtle">
+            <thead>
+              <tr className="text-left">
+                <th className="pr-2">Time</th>
+                <th className="pr-2">Amount</th>
+                <th className="pr-2">Country</th>
+                <th className="pr-2">Decision</th>
+                <th>Rules</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.map((x) => (
+                <tr key={x.id}>
+                  <td className="pr-2">{new Date(x.ts).toLocaleString()}</td>
+                  <td className="pr-2">
+                    {x.amount} {x.currency}
+                  </td>
+                  <td className="pr-2">{x.countryCode}</td>
+                  <td className="pr-2">
+                    <Badge variant={DECISION_VARIANT[x.decision]}>
+                      {x.decision}
+                    </Badge>
+                  </td>
+                  <td>{x.hits.map((h) => h.rule).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {cases.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {cases.map((c) => (
+              <Text key={c.id} size="xs" variant="secondary">
+                {c.id} · {c.decision} · {c.status}
+              </Text>
+            ))}
+          </div>
+        )}
+      </Surface>
+    </div>
+  );
+}
+
+function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
+  if (!isToolUIPart(part)) return null;
+  const toolName = getToolName(part);
+
+  if (part.state === "output-error") {
+    return (
+      <div className="flex justify-start">
+        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring-2 ring-kumo-danger">
+          <Text size="xs" variant="secondary">
+            {toolName} failed: {part.errorText || "Tool call failed"}
+          </Text>
+        </Surface>
+      </div>
+    );
+  }
+
+  if (part.state !== "output-available") {
+    return (
+      <div className="flex justify-start">
+        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+          <div className="flex items-center gap-2">
+            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
+            <Text size="xs" variant="secondary">
+              Running {toolName}...
+            </Text>
+          </div>
+        </Surface>
+      </div>
+    );
+  }
+
+  const out = part.output as Record<string, unknown> & { status?: string };
+
+  // explainCase feeds the assistant's short text answer; no card of its own.
+  if (toolName === "explainCase" && out.status === "ok") return null;
+
+  if (out.status === "missing_fields") {
+    const fields = [
+      ...((out.missing as string[] | undefined) ?? []),
+      ...((out.invalid as string[] | undefined) ?? [])
+    ];
+    return (
+      <div className="flex justify-start">
+        <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
+          <div className="flex items-center gap-2">
+            <WarningIcon size={14} className="text-kumo-warning" />
+            <Text size="sm" bold>
+              Transaction not processed
+            </Text>
+          </div>
+          <div className="mt-1">
+            <Text size="xs" variant="secondary">
+              Missing or invalid: {fields.join(", ")}. Required: accountId,
+              amount, countryCode.
+            </Text>
+          </div>
+        </Surface>
+      </div>
+    );
+  }
+
+  if (toolName === "triageTransaction" && out.status === "ok") {
+    return <TriageResultCard result={out as unknown as TriageResult} />;
+  }
+
+  if (toolName === "getAccountHistory" && out.status === "ok") {
+    return (
+      <AccountHistoryCard
+        accountId={String(out.accountId)}
+        transactions={out.transactions as StoredTransaction[]}
+        cases={out.cases as CaseRecord[]}
+        totalTransactions={Number(out.totalTransactions ?? 0)}
+        totalCases={Number(out.totalCases ?? 0)}
+      />
+    );
+  }
+
+  return (
+    <div className="flex justify-start">
+      <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+        <Text size="xs" variant="secondary">
+          {String(out.message ?? `${toolName}: ${out.status ?? "done"}`)}
+        </Text>
+      </Surface>
+    </div>
   );
 }
 
@@ -152,12 +403,14 @@ function Chat() {
             <Empty
               icon={<ChatCircleDotsIcon size={32} />}
               title="Triage a transaction"
+              description="Send a transaction as text or JSON. Required: accountId, amount, countryCode (2-letter). Optional: currency, merchant, channel, timestamp. Example: acct_123, 4500, GB"
               contents={
                 <div className="flex flex-wrap justify-center gap-2">
                   {[
-                    "Triage a $4,500 card-not-present purchase in London for acct_123",
-                    "Show recent history for acct_123",
-                    "Which rules flag a possible velocity attack?"
+                    "acct_123, 40, US",
+                    "acct_123, 4500, GB",
+                    '{"accountId":"acct_123","amount":900}',
+                    "Show history for acct_123"
                   ].map((prompt) => (
                     <Button
                       key={prompt}
@@ -195,6 +448,10 @@ function Chat() {
                 {/* Render parts in chronological (array) order */}
                 {message.parts.map((part, i) => {
                   const key = `${message.id}-${i}`;
+
+                  if (isToolUIPart(part)) {
+                    return <ToolPartView key={key} part={part} />;
+                  }
 
                   if (part.type === "reasoning") {
                     if (!part.text.trim()) return null;
